@@ -74,6 +74,7 @@ class IMUGUI(QWidget):
         self.collected_data = []  # 用於儲存所有數據（1000Hz）
         self.display_data = []   # 用於顯示的數據（50Hz或其他顯示頻率）
         self.display_counter = 0  # 用於控制顯示頻率
+        self.current_display_divider = 2  # 預設100Hz -> 50Hz顯示
         
         # 連接信號
         self.parser.data_emitter.data_received.connect(self.on_data_received)
@@ -122,18 +123,23 @@ class IMUGUI(QWidget):
         self.pause_btn = QPushButton("暫停")
         self.clear_btn = QPushButton("清除數據")
         self.export_btn = QPushButton("匯出CSV")
-        self.send_cmd_btn = QPushButton("設定1000Hz")
+        
+        # 採樣頻率選擇
+        self.freq_cb = QComboBox()
+        self.freq_cb.addItems(["100Hz (預設)", "200Hz", "500Hz", "1000Hz"])
+        self.freq_cb.setCurrentIndex(0)  # 預設100Hz
+        self.apply_freq_btn = QPushButton("套用頻率")
         
         self.start_btn.clicked.connect(self.start_collecting)
         self.pause_btn.clicked.connect(self.pause_collecting)
         self.clear_btn.clicked.connect(self.clear_data)
         self.export_btn.clicked.connect(self.export_data)
-        self.send_cmd_btn.clicked.connect(self.send_1000hz_command)
+        self.apply_freq_btn.clicked.connect(self.apply_sampling_frequency)
         
         # 數據顯示限制
         self.max_points_spin = QSpinBox()
         self.max_points_spin.setRange(100, 10000)
-        self.max_points_spin.setValue(1000)
+        self.max_points_spin.setValue(10000)
         
         # 顯示選項
         self.show_accel = QCheckBox("加速度")
@@ -142,7 +148,9 @@ class IMUGUI(QWidget):
         self.show_accel.setChecked(True)
         self.show_gyro.setChecked(True)
         
-        ctrl_layout.addWidget(self.send_cmd_btn)
+        ctrl_layout.addWidget(QLabel("採樣頻率:"))
+        ctrl_layout.addWidget(self.freq_cb)
+        ctrl_layout.addWidget(self.apply_freq_btn)
         ctrl_layout.addWidget(self.start_btn)
         ctrl_layout.addWidget(self.pause_btn)
         ctrl_layout.addWidget(self.clear_btn)
@@ -206,8 +214,8 @@ class IMUGUI(QWidget):
             self.status_label.setText(f"狀態: 已連線至 {port} @ {baud}")
             self.connect_btn.setEnabled(False)
             self.disconnect_btn.setEnabled(True)
-            self.send_cmd_btn.setEnabled(True)
-            QMessageBox.information(self, "成功", f"已連線至 {port} @ {baud}\n\n提示：請點擊'設定1000Hz'按鈕設定取樣頻率")
+            self.apply_freq_btn.setEnabled(True)
+            QMessageBox.information(self, "成功", f"已連線至 {port} @ {baud}\n\n提示：可選擇採樣頻率並點擊'套用頻率'設定")
         except serial.SerialException as e:
             QMessageBox.critical(self, "錯誤", f"無法連線 {port}：\n{e}")
             self.status_label.setText("狀態: 連線失敗")
@@ -223,23 +231,49 @@ class IMUGUI(QWidget):
         self.status_label.setText("狀態: 已斷線")
         self.connect_btn.setEnabled(True)
         self.disconnect_btn.setEnabled(False)
-        self.send_cmd_btn.setEnabled(False)
+        self.apply_freq_btn.setEnabled(False)
 
-    def send_1000hz_command(self):
-        """發送1000Hz設定指令"""
+    def apply_sampling_frequency(self):
+        """套用選擇的採樣頻率"""
         if not self.serial_port or not self.serial_port.is_open:
             QMessageBox.warning(self, "警告", "請先連線串口")
             return
         
+        freq_text = self.freq_cb.currentText()
+        
+        # 根據選擇的頻率設定對應的ONTIME值和顯示分頻
+        if "100Hz" in freq_text:
+            ontime = "0.01"
+            display_divider = 2  # 100Hz -> 50Hz顯示
+            freq_name = "100Hz"
+        elif "200Hz" in freq_text:
+            ontime = "0.005"
+            display_divider = 4  # 200Hz -> 50Hz顯示
+            freq_name = "200Hz"
+        elif "500Hz" in freq_text:
+            ontime = "0.002"
+            display_divider = 10  # 500Hz -> 50Hz顯示
+            freq_name = "500Hz"
+        elif "1000Hz" in freq_text:
+            ontime = "0.001"
+            display_divider = 20  # 1000Hz -> 50Hz顯示
+            freq_name = "1000Hz"
+        else:
+            return
+        
         try:
-            # 發送UNLOGALL LOG HI91 ONTIME 0.001指令
-            command = "UNLOGALL\r\nLOG HI91 ONTIME 0.001\r\n"
+            # 發送對應的指令
+            command = f"UNLOGALL\r\nLOG HI91 ONTIME {ontime}\r\n"
             self.serial_port.write(command.encode('utf-8'))
             self.serial_port.flush()
-            QMessageBox.information(self, "指令發送", "已發送1000Hz設定指令:\nUNLOGALL\nLOG HI91 ONTIME 0.001")
-            self.status_label.setText("狀態: 已設定1000Hz取樣頻率")
+            
+            # 更新顯示分頻器
+            self.current_display_divider = display_divider
+            
+            QMessageBox.information(self, "頻率設定", f"已設定採樣頻率為 {freq_name}\n指令: LOG HI91 ONTIME {ontime}")
+            self.status_label.setText(f"狀態: 已設定 {freq_name} 採樣頻率")
         except Exception as e:
-            QMessageBox.critical(self, "錯誤", f"發送指令失敗：\n{e}")
+            QMessageBox.critical(self, "錯誤", f"設定頻率失敗：\n{e}")
 
     def start_collecting(self):
         if not self.serial_port or not self.serial_port.is_open:
@@ -270,13 +304,12 @@ class IMUGUI(QWidget):
     def on_data_received(self, data):
         """處理接收到的數據"""
         if self.collecting:
-            # 所有數據都存到collected_data（1000Hz完整數據）
+            # 所有數據都存到collected_data（完整採樣頻率）
             self.collected_data.append(data)
             
-            # 控制顯示頻率 - 每20筆數據顯示1筆（1000Hz -> 50Hz顯示）
-            # 你可以修改這個數字來調整顯示頻率：20 = 50Hz, 10 = 100Hz, 5 = 200Hz
+            # 根據當前設定的分頻器控制顯示頻率
             self.display_counter += 1
-            if self.display_counter >= 20:  # 每20筆顯示1筆
+            if self.display_counter >= self.current_display_divider:
                 self.data_buffer.append(data)
                 self.display_data.append(data)
                 self.display_counter = 0
@@ -310,6 +343,11 @@ class IMUGUI(QWidget):
                                 data = self.parser.parse_arduino_line(line)
                                 if data:
                                     self.parser.data_emitter.data_received.emit(data)
+                except (serial.SerialException, OSError, PermissionError) as e:
+                    # 忽略常見的串口錯誤，避免終端輸出錯誤訊息
+                    if "ClearCommError" not in str(e):
+                        print(f"串口通訊警告: {e}")
+                    time.sleep(0.01)
                 except Exception as e:
                     print(f"讀取串口錯誤: {e}")
                     time.sleep(0.1)
@@ -349,7 +387,7 @@ class IMUGUI(QWidget):
             ax.plot(x_data, acc_y, 'g-', label='Acc Y', linewidth=1)
             ax.plot(x_data, acc_z, 'b-', label='Acc Z', linewidth=1)
             ax.legend(loc='upper right')  # 固定在右上角
-            ax.set_title("加速度 (g)")
+            ax.set_title("Acceleration (g)")
             ax.grid(True, alpha=0.3)
             subplot_idx += 1
 
@@ -363,7 +401,7 @@ class IMUGUI(QWidget):
             ax.plot(x_data, gyr_y, 'g-', label='Gyr Y', linewidth=1)
             ax.plot(x_data, gyr_z, 'b-', label='Gyr Z', linewidth=1)
             ax.legend(loc='upper right')  # 固定在右上角
-            ax.set_title("角速度 (°/s)")
+            ax.set_title("Angular Velocity (°/s)")
             ax.grid(True, alpha=0.3)
             subplot_idx += 1
             
@@ -377,7 +415,7 @@ class IMUGUI(QWidget):
             ax.plot(x_data, pitch, 'g-', label='Pitch', linewidth=1)
             ax.plot(x_data, yaw, 'b-', label='Yaw', linewidth=1)
             ax.legend(loc='upper right')  # 固定在右上角
-            ax.set_title("歐拉角 (°)")
+            ax.set_title("Euler Angles (°)")
             ax.grid(True, alpha=0.3)
 
         self.figure.tight_layout()
