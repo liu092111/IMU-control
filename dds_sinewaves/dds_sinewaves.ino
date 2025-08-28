@@ -1,7 +1,6 @@
 /*******************************************************************************
-    @file:   dds_sinewaves_with_adc.ino
-    @brief:  AD9106 DDS sine wave generator + Teensy ADC monitoring
-    @note:   Modified for Teensy 4.1 with ADC monitoring on A0
+    @file:   debug_test.ino
+    @brief:  AD9106 Debug Test - 加入除錯訊息來診斷問題
 *******************************************************************************/
 
 #include <AD9106.h>
@@ -15,45 +14,43 @@ AD9106 device(10);
 const bool OP_AMPS = true;
 const float FCLK = 0;
 
-// ADC settings
-const int ADC_PIN = A0;           // ADC input pin
-const int SAMPLE_RATE = 10000;    // 10kHz sampling rate (adjust based on your sine wave frequency)
-const int NUM_SAMPLES = 1000;     // Number of samples to collect
-const float ADC_RESOLUTION = 4095.0; // 12-bit ADC for Teensy 4.1
-const float ADC_VOLTAGE_REF = 3.3;   // Teensy 4.1 ADC reference voltage
-
 char stop_start = 's';
-char measure_cmd = 'm';
 bool started = false;
-unsigned long last_sample_time = 0;
-unsigned long sample_interval;
 
 void setup() {
-  Serial.begin(115200); // Higher baud rate for faster data transfer
+  Serial.begin(115200);
   while (!Serial) {
-    delay(10);
+    ;
   }
-  Serial.println("*** Teensy 4.1 + AD9106 DDS + ADC Monitor Ready ***");
+  Serial.println("*** Serial Port Ready ***");
 
-  // Calculate sampling interval in microseconds
-  sample_interval = 1000000 / SAMPLE_RATE; // Convert to microseconds
-
-  // Configure ADC for Teensy 4.1
-  analogReadResolution(12); // 12-bit resolution (0-4095) for better precision
-  // Note: Teensy 4.1 uses 3.3V reference by default, no need to set analogReference
-
+  Serial.println("開始初始化AD9106...");
+  
   //  Begin AD9106.
   device.begin(OP_AMPS, FCLK);
+  Serial.println("device.begin() 完成");
 
   // Start SPI communication at 14MHz
   device.spi_init(14000000);
+  Serial.println("SPI初始化完成 (14MHz)");
 
   // Reset AD9106 registers
+  Serial.println("重置AD9106暫存器...");
   device.reg_reset();
-  delay(1);
+  delay(100);  // 增加延遲時間
+  Serial.println("暫存器重置完成");
+  
+  // 測試SPI通訊 - 嘗試讀取一個暫存器
+  Serial.println("測試SPI通訊...");
+  int16_t test_read = device.spi_read(0x0000);  // 讀取暫存器0x0000
+  Serial.print("讀取暫存器0x0000的值: 0x");
+  Serial.println(test_read, HEX);
   
   // Configure sinewaves on all channels
+  Serial.println("設定正弦波輸出...");
   for (int i = 0; i < 4; i++) {
+    Serial.print("設定通道 ");
+    Serial.println(i + 1);
     device.setDDSsine(CHNL(i + 1));
     device.set_CHNL_DGAIN(CHNL(i + 1), 0x2000);  // Gain of 1/2
   }
@@ -62,74 +59,40 @@ void setup() {
   device.set_CHNL_DDS_PHASE(CHNL_2, 0x4000);
   device.set_CHNL_START_DELAY(CHNL_3, 0x1500);
 
-  //   Set DDS frequency - 你可以修改這個頻率
-  device.setDDSfreq(1000); // 1kHz sine wave for testing
+  //   Set DDS frequency
+  Serial.println("設定DDS頻率為50kHz...");
+  device.setDDSfreq(50000);
+
+  // 驗證頻率設定
+  float actual_freq = device.getDDSfreq();
+  Serial.print("實際DDS頻率: ");
+  Serial.print(actual_freq);
+  Serial.println(" Hz");
 
   // Update pattern to start
+  Serial.println("啟動波形產生...");
   device.update_pattern();
   started = true;
-  
-  Serial.println(F("Commands:"));
-  Serial.println(F("'s' - Start/Stop pattern"));
-  Serial.println(F("'m' - Measure and send ADC data"));
-  Serial.println(F("Pattern started."));
+  Serial.println("*** 初始化完成! Pattern started. Press 's' to start/stop. ***");
 }
 
 void loop() {
   if (Serial.available()) {
-    char command = Serial.read();
+    stop_start = Serial.read();
+    Serial.print("收到字元: ");
+    Serial.println(stop_start);
     
-    if (command == 's') {
+    if (stop_start == 's') {
       started = !started;
       if (started) {
+        Serial.println("啟動波形輸出...");
         device.start_pattern();
-        Serial.println(F("Pattern started"));
+        Serial.println("波形輸出已啟動");
       } else {
+        Serial.println("停止波形輸出...");
         device.stop_pattern();
-        Serial.println(F("Pattern stopped"));
-      }
-    }
-    
-    else if (command == 'm') {
-      if (started) {
-        measureAndSendData();
-      } else {
-        Serial.println(F("Error: Pattern not started. Press 's' first."));
+        Serial.println("波形輸出已停止");
       }
     }
   }
-}
-
-void measureAndSendData() {
-  Serial.println(F("START_DATA"));
-  Serial.print(F("SAMPLE_RATE:"));
-  Serial.println(SAMPLE_RATE);
-  Serial.print(F("NUM_SAMPLES:"));
-  Serial.println(NUM_SAMPLES);
-  Serial.print(F("ADC_REF_VOLTAGE:"));
-  Serial.println(ADC_VOLTAGE_REF);
-  Serial.println(F("DATA_BEGIN"));
-  
-  unsigned long start_time = micros();
-  
-  for (int i = 0; i < NUM_SAMPLES; i++) {
-    // Wait for next sample time
-    while (micros() - start_time < i * sample_interval) {
-      // Wait
-    }
-    
-    // Read ADC value
-    int adc_raw = analogRead(ADC_PIN);
-    
-    // Convert to voltage
-    float voltage = (adc_raw / ADC_RESOLUTION) * ADC_VOLTAGE_REF;
-    
-    // Send timestamp (microseconds) and voltage
-    Serial.print(micros() - start_time);
-    Serial.print(F(","));
-    Serial.print(voltage, 4); // 4 decimal places
-    Serial.println();
-  }
-  
-  Serial.println(F("DATA_END"));
 }
